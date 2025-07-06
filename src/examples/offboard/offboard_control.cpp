@@ -56,12 +56,22 @@ class OffboardControl : public rclcpp::Node
 {
 public:
 	OffboardControl() : Node("offboard_control")
-	{
+	{		
+		this->declare_parameter<int>("px4_instance", 0);
+        this->get_parameter("px4_instance", px4_instance);
 
-		offboard_control_mode_publisher_ = this->create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
-		trajectory_setpoint_publisher_ = this->create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
-		vehicle_command_publisher_ = this->create_publisher<VehicleCommand>("/fmu/in/vehicle_command", 10);
+        // Update publishers to include namespace for the px4_instance
+        std::string ns = "";
 
+        // Per PX4 multi-vehicle doc, px4_instance=0 uses no namespace, others use px4_<instance>
+        if (px4_instance> 0) {
+            ns = "/px4_" + std::to_string(px4_instance);
+        }
+
+        offboard_control_mode_publisher_ = this->create_publisher<OffboardControlMode>(ns + "/fmu/in/offboard_control_mode", 10);
+        trajectory_setpoint_publisher_ = this->create_publisher<TrajectorySetpoint>(ns + "/fmu/in/trajectory_setpoint", 10);
+        vehicle_command_publisher_ = this->create_publisher<VehicleCommand>(ns + "/fmu/in/vehicle_command", 10);
+		
 		offboard_setpoint_counter_ = 0;
 
 		auto timer_callback = [this]() -> void {
@@ -85,11 +95,11 @@ public:
 		};
 		timer_ = this->create_wall_timer(100ms, timer_callback);
 	}
-
 	void arm();
 	void disarm();
 
 private:
+	int px4_instance = 0;
 	rclcpp::TimerBase::SharedPtr timer_;
 
 	rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
@@ -133,8 +143,8 @@ void OffboardControl::publish_offboard_control_mode()
 {
 	OffboardControlMode msg{};
 	msg.position = true;
-	msg.velocity = false;
-	msg.acceleration = false;
+	msg.velocity = true;
+	msg.acceleration = true;
 	msg.attitude = false;
 	msg.body_rate = false;
 	msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
@@ -150,6 +160,8 @@ void OffboardControl::publish_trajectory_setpoint()
 {
 	TrajectorySetpoint msg{};
 	msg.position = {0.0, 0.0, -5.0};
+	msg.velocity = {0.0, 0.0, 0.0};
+	msg.acceleration = {0.0, 0.0, 0.0};
 	msg.yaw = -3.14; // [-PI:PI]
 	msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
 	trajectory_setpoint_publisher_->publish(msg);
@@ -167,7 +179,7 @@ void OffboardControl::publish_vehicle_command(uint16_t command, float param1, fl
 	msg.param1 = param1;
 	msg.param2 = param2;
 	msg.command = command;
-	msg.target_system = 1;
+	msg.target_system = px4_instance + 1;
 	msg.target_component = 1;
 	msg.source_system = 1;
 	msg.source_component = 1;
@@ -181,8 +193,15 @@ int main(int argc, char *argv[])
 	std::cout << "Starting offboard control node..." << std::endl;
 	setvbuf(stdout, NULL, _IONBF, BUFSIZ);
 	rclcpp::init(argc, argv);
-	rclcpp::spin(std::make_shared<OffboardControl>());
 
+	auto node = std::make_shared<OffboardControl>();
+
+	while (rclcpp::ok() && node->get_clock()->now().nanoseconds() == 0) {
+	    RCLCPP_INFO(node->get_logger(), "Waiting for simulation clock...");
+	    rclcpp::sleep_for(std::chrono::milliseconds(100));
+	}
+
+	rclcpp::spin(node);
 	rclcpp::shutdown();
 	return 0;
 }
