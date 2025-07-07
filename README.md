@@ -8,6 +8,10 @@ This package provides example nodes for exchanging data and commands between ROS
 It also provides a [library](./include/px4_ros_com/frame_transforms.h) to ease the conversion between ROS2 and PX4 frame conventions.
 It has a straight dependency on the [`px4_msgs`](https://github.com/PX4/px4_msgs) package.
 
+For communication between multiple vehicles from ros2 to px4. After building the package, simply run
+<code>
+ros2 run px4_ros_com offboard_control --ros-args -p px4_instance:=<instance>
+</code>
 ## Install, build and usage
 
 Check the [uXRCE-DDS](https://docs.px4.io/main/en/middleware/uxrce_dds.html) and the [ROS2 Interface](https://docs.px4.io/main/en/ros/ros2_comm.html) sections on the PX4 Devguide for details on how to install the required dependencies, build the package and use it.
