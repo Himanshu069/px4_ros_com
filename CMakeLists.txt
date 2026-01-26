@@ -72,6 +72,10 @@ add_executable(ros_odometry_to_vehicle_odometry src/examples/odometry/ros2_to_px
 ament_target_dependencies(ros_odometry_to_vehicle_odometry rclcpp px4_msgs tf2_ros tf2_eigen nav_msgs)
 target_link_libraries(ros_odometry_to_vehicle_odometry frame_transforms)
 install(TARGETS ros_odometry_to_vehicle_odometry DESTINATION lib/${PROJECT_NAME})
+
+add_executable(offboard_cmd_vel src/examples/offboard/offboard_cmd_vel.cpp)
+ament_target_dependencies(offboard_cmd_vel rclcpp geometry_msgs sensor_msgs px4_msgs)
+install(TARGETS offboard_cmd_vel DESTINATION lib/${PROJECT_NAME})
 ############
 # Install ##
 ############
