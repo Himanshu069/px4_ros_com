@@ -76,6 +76,10 @@ install(TARGETS ros_odometry_to_vehicle_odometry DESTINATION lib/${PROJECT_NAME}
 add_executable(offboard_cmd_vel src/examples/offboard/offboard_cmd_vel.cpp)
 ament_target_dependencies(offboard_cmd_vel rclcpp geometry_msgs sensor_msgs px4_msgs)
 install(TARGETS offboard_cmd_vel DESTINATION lib/${PROJECT_NAME})
+
+add_executable(offboard_exploration src/examples/offboard/offboard_exploration.cpp)
+ament_target_dependencies(offboard_exploration rclcpp geometry_msgs sensor_msgs px4_msgs)
+install(TARGETS offboard_exploration DESTINATION lib/${PROJECT_NAME})
 ############
 # Install ##
 ############
