@@ -46,7 +46,6 @@
 #include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <px4_msgs/msg/vehicle_status.hpp>
 #include <geometry_msgs/msg/twist.hpp>
-#include <sensor_msgs/msg/joy.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <stdint.h>
 
@@ -87,10 +86,6 @@ public:
 		ack_subscriber_ = this->create_subscription<px4_msgs::msg::VehicleCommandAck>(
             "/fmu/out/vehicle_command_ack", rclcpp::QoS(10).best_effort(), std::bind(&OffboardControl::vehicle_cmd_ack_callback, this, std::placeholders::_1));
 
-		joy_subscriber_ = this->create_subscription<sensor_msgs::msg::Joy>(
-            "/joy", 10, std::bind(&OffboardControl::joy_callback, this, std::placeholders::_1));
-
-
     	this->get_parameter("use_sim_time", use_sim_time_);
 
 		offboard_setpoint_counter_ = 0;
@@ -100,7 +95,7 @@ public:
 		current_goal_.z = -1.3;    // Down position (negative altitude) in NED earth-fixed frame, (metres)
 		current_goal_.heading = 0; // Euler yaw angle transforming the tangent plane relative to NED earth-fixed frame, -PI..+PI,  (radians)
 		
-		control_State_ = kPositionControl;
+		control_State_ = kVelocityControl;
 		velocity2d_ = true;
 		last_request_ = this->get_clock()->now();
 		arming_stamp_ = this->get_clock()->now();
@@ -125,6 +120,15 @@ public:
 				}
 			}
 			
+			if (control_State_ == kPositionControl)
+			{
+				double altitude_error = std::abs(local_pose_.z - current_goal_.z);
+				if (altitude_error < 0.05)
+				{
+					RCLCPP_INFO(get_logger(), "Reached takeoff altitude, switching to velocity control");
+					control_State_ = kVelocityControl;
+				}
+			}
 			if (offboard_setpoint_counter_ >= 21)
 			{
 				update_state();
@@ -197,7 +201,7 @@ private:
 	void publish_offboard_control_mode()
 	{
 		OffboardControlMode msg{};
-		msg.position = true;
+		// msg.position = true;
 		msg.velocity = true;
 		msg.acceleration = false;
 		msg.attitude = false;
@@ -228,14 +232,22 @@ private:
         // Use twist message for XY velocity control
         msg.velocity[0] = control_State_ == kVelocityControl? twist_.linear.x * cosyaw + (twist_.linear.y)*sinyaw : NAN;
         msg.velocity[1]= control_State_ == kVelocityControl ?  twist_.linear.x * sinyaw + (-twist_.linear.y)*cosyaw : NAN;
-		msg.velocity[2]= control_State_ == kVelocityControl && !velocity2d_ ?  -twist_.linear.z : NAN;
-		msg.yawspeed = control_State_ == kVelocityControl ? -twist_.angular.z : NAN;
+		msg.velocity[2]= control_State_ == kVelocityControl ?  -twist_.linear.z : NAN;
+		// msg.yawspeed = control_State_ == kVelocityControl ? -twist_.angular.z : NAN;
 
 		msg.position[0] = control_State_ == kPositionControl ? current_goal_.x : NAN;
 		msg.position[1] = control_State_ == kPositionControl ? current_goal_.y : NAN;
         msg.position[2] = control_State_ == kPositionControl ? current_goal_.z : velocity2d_ ? current_goal_.z : NAN;
 		msg.yaw = control_State_ == kPositionControl ? current_goal_.heading : NAN; // [-PI:PI]
-
+		if (control_State_ == kPositionControl) {
+    		msg.yaw = current_goal_.heading;   // lock yaw
+    		msg.yawspeed = NAN;
+		} 
+		else 
+		{
+    		msg.yaw = NAN;
+    		msg.yawspeed = 0.0;
+		}
 		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
 		trajectory_setpoint_publisher_->publish(msg);
 	}
@@ -260,11 +272,6 @@ private:
         twist_ = *msg;
 		twist_stamp_ = this->get_clock()->now();
 
-		if(twist_stamp_.seconds() - arming_stamp_.seconds() > 5.0 && control_State_ == kPositionControl)
-		{
-			RCLCPP_INFO(get_logger(), "Switch to velocity control");
-			control_State_ = kVelocityControl;
-		}
     }
 
     void local_pos_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
@@ -290,17 +297,6 @@ private:
 		}
     }
 
-	void joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg){
-		if(msg->buttons[5] == 1)
-		{
-			// When holding right trigger, accept velocity in Z
-			velocity2d_ = false;
-		}
-		else
-		{
-			velocity2d_ = true;
-		}
-	}
 
 private:
 	rclcpp::TimerBase::SharedPtr timer_;
@@ -314,8 +310,6 @@ private:
 	rclcpp::Subscription<VehicleLocalPosition>::SharedPtr local_pos_subscriber_;
 	rclcpp::Subscription<VehicleStatus>::SharedPtr status_subscriber_;
 	rclcpp::Subscription<VehicleCommandAck>::SharedPtr ack_subscriber_;
-	rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_subscriber_;
-	std::atomic<uint64_t> timestamp_;   //!< common synced timestamped
 
 	uint64_t offboard_setpoint_counter_;   //!< counter for the number of setpoints sent
 
