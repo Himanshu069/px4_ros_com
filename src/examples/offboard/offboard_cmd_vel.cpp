@@ -95,7 +95,7 @@ public:
 		current_goal_.z = -1.3;    // Down position (negative altitude) in NED earth-fixed frame, (metres)
 		current_goal_.heading = 0; // Euler yaw angle transforming the tangent plane relative to NED earth-fixed frame, -PI..+PI,  (radians)
 		
-		control_State_ = kVelocityControl;
+		control_State_ = kPositionControl;
 		velocity2d_ = true;
 		last_request_ = this->get_clock()->now();
 		arming_stamp_ = this->get_clock()->now();
@@ -178,6 +178,7 @@ private:
 		arming_stamp_ = get_clock()->now();
 		current_goal_ = local_pose_;
 		current_goal_.z = current_goal_.z - 1.3; // take-off 1.3 meter over current position 
+		current_goal_.heading = 0.0;
 		RCLCPP_INFO(get_logger(), "Vehicle arming..");
 		RCLCPP_INFO(get_logger(), "Take off at 1.3 meter... to position=(%f,%f,%f) heading=%f",
 				current_goal_.x,
@@ -201,8 +202,8 @@ private:
 	void publish_offboard_control_mode()
 	{
 		OffboardControlMode msg{};
-		// msg.position = true;
-		msg.velocity = true;
+		msg.position = (control_State_ == kPositionControl);
+    	msg.velocity = (control_State_ == kVelocityControl);
 		msg.acceleration = false;
 		msg.attitude = false;
 		msg.body_rate = false;
@@ -246,7 +247,7 @@ private:
 		else 
 		{
     		msg.yaw = NAN;
-    		msg.yawspeed = 0.0;
+    		msg.yawspeed = -twist_.angular.z;
 		}
 		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
 		trajectory_setpoint_publisher_->publish(msg);
@@ -271,6 +272,18 @@ private:
 	{
         twist_ = *msg;
 		twist_stamp_ = this->get_clock()->now();
+		
+		double current_altitude = -local_pose_.z; 
+    	double target_altitude = -current_goal_.z;
+
+		if (control_State_ == kPositionControl && current_altitude >= (target_altitude - 0.1))
+    {
+        if (twist_stamp_.seconds() - arming_stamp_.seconds() > 2.0)
+        {
+            RCLCPP_INFO(get_logger(), "Altitude reached (%.2f m). Switching to velocity control.", current_altitude);
+            control_State_ = kVelocityControl;
+        }
+    }
 
     }
 
