@@ -173,7 +173,8 @@ private:
 	{
 		arming_stamp_ = get_clock()->now();
 		current_goal_ = local_pose_;
-		current_goal_.z = current_goal_.z - 1.3; // take-off 1.3 meter over current position 
+		current_goal_.z = current_goal_.z - 1.3;
+		current_goal_.heading = 0.0;
 		RCLCPP_INFO(get_logger(), "Vehicle arming..");
 		RCLCPP_INFO(get_logger(), "Take off at 1.3 meter... to position=(%f,%f,%f) heading=%f",
 				current_goal_.x,
