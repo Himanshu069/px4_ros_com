@@ -46,6 +46,7 @@
 #include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <px4_msgs/msg/vehicle_status.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <sensor_msgs/msg/joy.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <stdint.h>
 
@@ -78,13 +79,17 @@ public:
 		
 		// Subscription to get the current vehicle position
         local_pos_subscriber_ = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-            "/fmu/out/vehicle_local_position_v1", rclcpp::QoS(10).best_effort(), std::bind(&OffboardControl::local_pos_callback, this, std::placeholders::_1));
+            "/fmu/out/vehicle_local_position", rclcpp::QoS(10).best_effort(), std::bind(&OffboardControl::local_pos_callback, this, std::placeholders::_1));
 	
 		status_subscriber_ = this->create_subscription<px4_msgs::msg::VehicleStatus>(
             "/fmu/out/vehicle_status_v1", rclcpp::QoS(10).best_effort(), std::bind(&OffboardControl::vehicle_status_callback, this, std::placeholders::_1));
 			
 		ack_subscriber_ = this->create_subscription<px4_msgs::msg::VehicleCommandAck>(
             "/fmu/out/vehicle_command_ack", rclcpp::QoS(10).best_effort(), std::bind(&OffboardControl::vehicle_cmd_ack_callback, this, std::placeholders::_1));
+
+		joy_subscriber_ = this->create_subscription<sensor_msgs::msg::Joy>(
+            "/joy", 10, std::bind(&OffboardControl::joy_callback, this, std::placeholders::_1));
+
 
     	this->get_parameter("use_sim_time", use_sim_time_);
 
@@ -120,15 +125,6 @@ public:
 				}
 			}
 			
-			if (control_State_ == kPositionControl)
-			{
-				double altitude_error = std::abs(local_pose_.z - current_goal_.z);
-				if (altitude_error < 0.05)
-				{
-					RCLCPP_INFO(get_logger(), "Reached takeoff altitude, switching to velocity control");
-					control_State_ = kVelocityControl;
-				}
-			}
 			if (offboard_setpoint_counter_ >= 21)
 			{
 				update_state();
@@ -178,7 +174,6 @@ private:
 		arming_stamp_ = get_clock()->now();
 		current_goal_ = local_pose_;
 		current_goal_.z = current_goal_.z - 1.3; // take-off 1.3 meter over current position 
-		current_goal_.heading = 0.0;
 		RCLCPP_INFO(get_logger(), "Vehicle arming..");
 		RCLCPP_INFO(get_logger(), "Take off at 1.3 meter... to position=(%f,%f,%f) heading=%f",
 				current_goal_.x,
@@ -202,8 +197,8 @@ private:
 	void publish_offboard_control_mode()
 	{
 		OffboardControlMode msg{};
-		msg.position = (control_State_ == kPositionControl);
-    	msg.velocity = (control_State_ == kVelocityControl);
+		msg.position = true;
+		msg.velocity = true;
 		msg.acceleration = false;
 		msg.attitude = false;
 		msg.body_rate = false;
@@ -226,29 +221,21 @@ private:
 		px4_msgs::msg::TrajectorySetpoint msg{};
         msg.timestamp = this->now().nanoseconds() / 1000;
         
-		double yaw = local_pose_.heading;
-		double cosyaw = cos(yaw);
-		double sinyaw = sin(yaw);
+		//double yaw = local_pose_.heading;
+		//double cosyaw = cos(yaw);
+		//double sinyaw = sin(yaw);
 
         // Use twist message for XY velocity control
-        msg.velocity[0] = control_State_ == kVelocityControl? twist_.linear.x * cosyaw + (twist_.linear.y)*sinyaw : NAN;
-        msg.velocity[1]= control_State_ == kVelocityControl ?  twist_.linear.x * sinyaw + (-twist_.linear.y)*cosyaw : NAN;
-		msg.velocity[2]= control_State_ == kVelocityControl ?  -twist_.linear.z : NAN;
-		// msg.yawspeed = control_State_ == kVelocityControl ? -twist_.angular.z : NAN;
+        	msg.velocity[0] = control_State_ == kVelocityControl? twist_.linear.y : NAN;
+        	msg.velocity[1]= control_State_ == kVelocityControl ?  twist_.linear.x  : NAN;
+		msg.velocity[2]= control_State_ == kVelocityControl && !velocity2d_ ?  -twist_.linear.z : NAN;
+		msg.yawspeed = control_State_ == kVelocityControl ? -twist_.angular.z : NAN;
 
 		msg.position[0] = control_State_ == kPositionControl ? current_goal_.x : NAN;
 		msg.position[1] = control_State_ == kPositionControl ? current_goal_.y : NAN;
         msg.position[2] = control_State_ == kPositionControl ? current_goal_.z : velocity2d_ ? current_goal_.z : NAN;
 		msg.yaw = control_State_ == kPositionControl ? current_goal_.heading : NAN; // [-PI:PI]
-		if (control_State_ == kPositionControl) {
-    		msg.yaw = current_goal_.heading;   // lock yaw
-    		msg.yawspeed = NAN;
-		} 
-		else 
-		{
-    		msg.yaw = NAN;
-    		msg.yawspeed = -twist_.angular.z;
-		}
+
 		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
 		trajectory_setpoint_publisher_->publish(msg);
 	}
@@ -272,19 +259,12 @@ private:
 	{
         twist_ = *msg;
 		twist_stamp_ = this->get_clock()->now();
-		
-		double current_altitude = -local_pose_.z; 
-    	double target_altitude = -current_goal_.z;
 
-		if (control_State_ == kPositionControl && current_altitude >= (target_altitude - 0.1))
-    {
-        if (twist_stamp_.seconds() - arming_stamp_.seconds() > 2.0)
-        {
-            RCLCPP_INFO(get_logger(), "Altitude reached (%.2f m). Switching to velocity control.", current_altitude);
-            control_State_ = kVelocityControl;
-        }
-    }
-
+		if(twist_stamp_.seconds() - arming_stamp_.seconds() > 5.0 && control_State_ == kPositionControl)
+		{
+			RCLCPP_INFO(get_logger(), "Switch to velocity control");
+			control_State_ = kVelocityControl;
+		}
     }
 
     void local_pos_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
@@ -310,6 +290,17 @@ private:
 		}
     }
 
+	void joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg){
+		if(msg->buttons[5] == 1)
+		{
+			// When holding right trigger, accept velocity in Z
+			velocity2d_ = false;
+		}
+		else
+		{
+			velocity2d_ = true;
+		}
+	}
 
 private:
 	rclcpp::TimerBase::SharedPtr timer_;
@@ -323,6 +314,8 @@ private:
 	rclcpp::Subscription<VehicleLocalPosition>::SharedPtr local_pos_subscriber_;
 	rclcpp::Subscription<VehicleStatus>::SharedPtr status_subscriber_;
 	rclcpp::Subscription<VehicleCommandAck>::SharedPtr ack_subscriber_;
+	rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_subscriber_;
+	std::atomic<uint64_t> timestamp_;   //!< common synced timestamped
 
 	uint64_t offboard_setpoint_counter_;   //!< counter for the number of setpoints sent
 
