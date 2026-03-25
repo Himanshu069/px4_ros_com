@@ -97,7 +97,7 @@ public:
 
 		current_goal_.x = 0;       // North position in NED earth-fixed frame, (metres)
 		current_goal_.y = 0;       // East position in NED earth-fixed frame, (metres)
-		current_goal_.z = -1.3;    // Down position (negative altitude) in NED earth-fixed frame, (metres)
+		current_goal_.z = -0.8;    // Down position (negative altitude) in NED earth-fixed frame, (metres)
 		current_goal_.heading = 0; // Euler yaw angle transforming the tangent plane relative to NED earth-fixed frame, -PI..+PI,  (radians)
 		
 		control_State_ = kPositionControl;
@@ -148,8 +148,7 @@ private:
 		{
 			if(!vehicle_status_.pre_flight_checks_pass || vehicle_status_.nav_state != px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_OFFBOARD)
 			{
-				RCLCPP_ERROR(get_logger(), "Pre-flight checks are failing and offboard is not enabled, shutting down!");
-				rclcpp::shutdown();
+				RCLCPP_ERROR(get_logger(), "Pre-flight checks are failing and offboard is not enabled");
 			}
 			else if(get_clock()->now().seconds() - twist_stamp_.seconds() < 1) // valid joystick command
 			{
@@ -173,7 +172,7 @@ private:
 	{
 		arming_stamp_ = get_clock()->now();
 		current_goal_ = local_pose_;
-		current_goal_.z = current_goal_.z - 1.3; // take-off 1.3 meter over current position 
+		current_goal_.z = current_goal_.z - 0.8; // take-off 1.3 meter over current position 
 		RCLCPP_INFO(get_logger(), "Vehicle arming..");
 		RCLCPP_INFO(get_logger(), "Take off at 1.3 meter... to position=(%f,%f,%f) heading=%f",
 				current_goal_.x,
@@ -219,7 +218,7 @@ private:
 		}
 
 		px4_msgs::msg::TrajectorySetpoint msg{};
-        msg.timestamp = this->now().nanoseconds() / 1000;
+       		msg.timestamp = this->now().nanoseconds() / 1000;
         
 		//double yaw = local_pose_.heading;
 		//double cosyaw = cos(yaw);
@@ -233,7 +232,7 @@ private:
 
 		msg.position[0] = control_State_ == kPositionControl ? current_goal_.x : NAN;
 		msg.position[1] = control_State_ == kPositionControl ? current_goal_.y : NAN;
-        msg.position[2] = control_State_ == kPositionControl ? current_goal_.z : velocity2d_ ? current_goal_.z : NAN;
+        	msg.position[2] = control_State_ == kPositionControl ? current_goal_.z : velocity2d_ ? current_goal_.z : NAN;
 		msg.yaw = control_State_ == kPositionControl ? current_goal_.heading : NAN; // [-PI:PI]
 
 		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
@@ -304,7 +303,7 @@ private:
 
 private:
 	rclcpp::TimerBase::SharedPtr timer_;
-	double target_altitude_ = -1.3;
+	double target_altitude_ = -0.8;
 
 	rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
 	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
