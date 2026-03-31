@@ -174,7 +174,7 @@ private:
 		current_goal_ = local_pose_;
 		current_goal_.z = current_goal_.z - 0.8; // take-off 1.3 meter over current position 
 		RCLCPP_INFO(get_logger(), "Vehicle arming..");
-		RCLCPP_INFO(get_logger(), "Take off at 1.3 meter... to position=(%f,%f,%f) heading=%f",
+		RCLCPP_INFO(get_logger(), "Take off at 0.8 meter... to position=(%f,%f,%f) heading=%f",
 				current_goal_.x,
 				current_goal_.y,
 				current_goal_.z,

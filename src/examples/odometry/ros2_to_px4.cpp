@@ -7,7 +7,7 @@
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/odometry.hpp>
-
+#include <algorithm>
 #include <mutex>
 #include <chrono>
 using namespace std::chrono_literals;
@@ -80,17 +80,30 @@ public:
 			msg.q[1] = orientationNED.x();
 			msg.q[2] = orientationNED.y();
 			msg.q[3] = orientationNED.z();
+			
+			//const float POS_MIN = 1e-4;   // ~1 cm std dev
+			//const float ORI_MIN = 1e-4;
+			
 			msg.position[0] = positionNED.x();
 			msg.position[1] = positionNED.y();
 			msg.position[2] = positionNED.z();
-			msg.position_variance[0] = covNED[0];
-			msg.position_variance[1] = covNED[7];
-			msg.position_variance[2] = covNED[14];
-			msg.orientation_variance[0] = covNED[21];
-			msg.orientation_variance[1] = covNED[28];
-			msg.orientation_variance[2] = covNED[35];
+			
+			//msg.position_variance[0] = std::max((float)covNED[0], POS_MIN);
+			//msg.position_variance[1] = std::max((float)covNED[7], POS_MIN);
+			//msg.position_variance[2] = std::max((float)covNED[14], POS_MIN);
 
+			//msg.orientation_variance[0] = std::max((float)covNED[21], ORI_MIN);
+			//msg.orientation_variance[1] = std::max((float)covNED[28], ORI_MIN);
+			//msg.orientation_variance[2] = std::max((float)covNED[35], ORI_MIN);
 			// Twist is published in base frame, just convert to NED
+			msg.position_variance[0] = covNED[0];
+                        msg.position_variance[1] = covNED[7];
+                        msg.position_variance[2] = covNED[14];
+
+                        msg.orientation_variance[0] = covNED[21];
+                        msg.orientation_variance[1] = covNED[28];
+                        msg.orientation_variance[2] = covNED[35];
+			
 			msg.velocity_frame = px4_msgs::msg::VehicleOdometry::VELOCITY_FRAME_BODY_FRD;
 			Eigen::Vector3d linearROS, angularROS;
 			tf2::fromMsg(odometry->twist.twist.linear, linearROS);
