@@ -258,8 +258,10 @@ private:
 	{
         twist_ = *msg;
 		twist_stamp_ = this->get_clock()->now();
-
-		if(twist_stamp_.seconds() - arming_stamp_.seconds() > 5.0 && control_State_ == kPositionControl)
+	float z_error = std::abs(local_pose_.z - current_goal_.z);
+	if(z_error < 0.15 && twist_stamp_.seconds() - arming_stamp_.seconds() > 3.0 
+   		&& control_State_ == kPositionControl)
+	//	if(twist_stamp_.seconds() - arming_stamp_.seconds() > 5.0 && control_State_ == kPositionControl)
 		{
 			RCLCPP_INFO(get_logger(), "Switch to velocity control");
 			control_State_ = kVelocityControl;
