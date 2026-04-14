@@ -77,6 +77,11 @@ add_executable(offboard_cmd_vel src/examples/offboard/offboard_cmd_vel.cpp)
 ament_target_dependencies(offboard_cmd_vel rclcpp geometry_msgs sensor_msgs px4_msgs)
 install(TARGETS offboard_cmd_vel DESTINATION lib/${PROJECT_NAME})
 
+add_executable(offboard_z src/examples/offboard/offboard_z.cpp)
+ament_target_dependencies(offboard_z rclcpp geometry_msgs sensor_msgs px4_msgs)
+install(TARGETS offboard_z DESTINATION lib/${PROJECT_NAME})
+
+
 add_executable(imu_bridge src/examples/listeners/imu_bridge.cpp)
 ament_target_dependencies(imu_bridge
   rclcpp

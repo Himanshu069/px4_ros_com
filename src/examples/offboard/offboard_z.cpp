@@ -1,0 +1,358 @@
+#include <px4_msgs/msg/offboard_control_mode.hpp>
+#include <px4_msgs/msg/trajectory_setpoint.hpp>
+#include <px4_msgs/msg/vehicle_command.hpp>
+#include <px4_msgs/msg/vehicle_command_ack.hpp>
+#include <px4_msgs/msg/vehicle_control_mode.hpp>
+#include <px4_msgs/msg/vehicle_local_position.hpp>
+#include <px4_msgs/msg/vehicle_status.hpp>
+#include <px4_msgs/msg/distance_sensor.hpp>          // ← ADD THIS
+#include <geometry_msgs/msg/twist.hpp>
+#include <sensor_msgs/msg/joy.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <stdint.h>
+#include <chrono>
+#include <iostream>
+
+using namespace std::chrono;
+using namespace std::chrono_literals;
+using namespace px4_msgs::msg;
+
+class OffboardControl : public rclcpp::Node
+{
+public:
+    enum ControlState {
+        kPositionControl,
+        kVelocityControl
+    };
+
+public:
+    OffboardControl() :
+        Node("offboard_control"),
+        use_sim_time_(false),
+        rangefinder_distance_(0.0f),
+        rangefinder_valid_(false),
+        target_altitude_m_(0.8f)      // target altitude in METERS (positive = up)
+    {
+        offboard_control_mode_publisher_ = this->create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
+        trajectory_setpoint_publisher_   = this->create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
+        vehicle_command_publisher_       = this->create_publisher<VehicleCommand>("/fmu/in/vehicle_command", 10);
+
+        twist_subscriber_ = this->create_subscription<geometry_msgs::msg::Twist>(
+            "/cmd_vel", 10,
+            std::bind(&OffboardControl::twist_callback, this, std::placeholders::_1));
+
+        local_pos_subscriber_ = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
+            "/fmu/out/vehicle_local_position", rclcpp::QoS(10).best_effort(),
+            std::bind(&OffboardControl::local_pos_callback, this, std::placeholders::_1));
+
+        status_subscriber_ = this->create_subscription<px4_msgs::msg::VehicleStatus>(
+            "/fmu/out/vehicle_status_v1", rclcpp::QoS(10).best_effort(),
+            std::bind(&OffboardControl::vehicle_status_callback, this, std::placeholders::_1));
+
+        ack_subscriber_ = this->create_subscription<px4_msgs::msg::VehicleCommandAck>(
+            "/fmu/out/vehicle_command_ack", rclcpp::QoS(10).best_effort(),
+            std::bind(&OffboardControl::vehicle_cmd_ack_callback, this, std::placeholders::_1));
+
+        joy_subscriber_ = this->create_subscription<sensor_msgs::msg::Joy>(
+            "/joy", 10,
+            std::bind(&OffboardControl::joy_callback, this, std::placeholders::_1));
+
+        // ── NEW: subscribe to rangefinder ──────────────────────────────────────
+        distance_sensor_subscriber_ = this->create_subscription<px4_msgs::msg::DistanceSensor>(
+            "/fmu/out/distance_sensor", rclcpp::QoS(10).best_effort(),
+            std::bind(&OffboardControl::distance_sensor_callback, this, std::placeholders::_1));
+        // ───────────────────────────────────────────────────────────────────────
+
+        this->get_parameter("use_sim_time", use_sim_time_);
+
+        offboard_setpoint_counter_ = 0;
+
+        current_goal_.x       = 0;
+        current_goal_.y       = 0;
+        current_goal_.z       = -target_altitude_m_;   // NED: negative = up
+        current_goal_.heading = 0;
+
+        control_State_ = kPositionControl;
+        velocity2d_    = true;
+        last_request_  = this->get_clock()->now();
+        arming_stamp_  = this->get_clock()->now();
+
+        auto timer_callback = [this]() -> void {
+
+            if (offboard_setpoint_counter_ == 10) {
+                RCLCPP_INFO(get_logger(), "Setting offboard mode...");
+                this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
+            }
+            else if (offboard_setpoint_counter_ == 20) {
+                if (!vehicle_status_.pre_flight_checks_pass ||
+                    vehicle_status_.nav_state != VehicleStatus::NAVIGATION_STATE_OFFBOARD)
+                {
+                    offboard_setpoint_counter_ = 0;
+                    RCLCPP_WARN(get_logger(),
+                        "Offboard could not be set — will retry in 1s.");
+                } else {
+                    this->arm();
+                }
+            }
+
+            if (offboard_setpoint_counter_ >= 21) {
+                update_state();
+            } else {
+                ++offboard_setpoint_counter_;
+            }
+
+            publish_offboard_control_mode();
+            publish_trajectory_setpoint();
+        };
+
+        timer_ = this->create_wall_timer(100ms, timer_callback);
+    }
+
+private:
+
+    // ── NEW: rangefinder callback ──────────────────────────────────────────────
+    void distance_sensor_callback(const px4_msgs::msg::DistanceSensor::SharedPtr msg)
+    {
+        // signal_quality == 0 means invalid — reject it
+        if (msg->signal_quality == 0) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                "Rangefinder: signal_quality=0, measurement rejected");
+            rangefinder_valid_ = false;
+            return;
+        }
+
+        // current_distance is in metres in the PX4 uORB message
+        rangefinder_distance_ = msg->current_distance;
+        rangefinder_valid_    = true;
+
+        RCLCPP_DEBUG(get_logger(), "Rangefinder: %.3f m  signal_quality=%d",
+            rangefinder_distance_, msg->signal_quality);
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+
+    void update_state()
+    {
+        if (this->get_clock()->now() - last_request_ > rclcpp::Duration::from_seconds(1.0))
+        {
+            if (!vehicle_status_.pre_flight_checks_pass ||
+                vehicle_status_.nav_state != VehicleStatus::NAVIGATION_STATE_OFFBOARD)
+            {
+                RCLCPP_ERROR(get_logger(), "Pre-flight checks failing / offboard not active");
+            }
+            else if (get_clock()->now().seconds() - twist_stamp_.seconds() < 1.0)
+            {
+                if (vehicle_status_.arming_state == VehicleStatus::ARMING_STATE_DISARMED &&
+                    twist_.linear.z < -0.4 && twist_.angular.z < -0.4)
+                {
+                    this->arm();
+                }
+                else if (vehicle_status_.arming_state == VehicleStatus::ARMING_STATE_ARMED &&
+                         twist_.linear.z < -0.4 && twist_.angular.z > 0.4)
+                {
+                    this->disarm();
+                }
+            }
+            last_request_ = get_clock()->now();
+        }
+    }
+
+    void arm()
+    {
+        arming_stamp_ = get_clock()->now();
+
+        // ── USE RANGEFINDER FOR TAKEOFF Z IF VALID ─────────────────────────────
+        if (rangefinder_valid_) {
+            // rangefinder gives height above ground; NED z = -(current + target)
+            current_goal_.z = -(rangefinder_distance_ + target_altitude_m_);
+            RCLCPP_INFO(get_logger(),
+                "Arming — rangefinder=%.3fm, target NED z=%.3f",
+                rangefinder_distance_, current_goal_.z);
+        } else {
+            // Fallback to local position estimate if rangefinder not ready
+            current_goal_ = local_pose_;
+            current_goal_.z -= target_altitude_m_;
+            RCLCPP_WARN(get_logger(),
+                "Arming — rangefinder invalid, using EKF position (z=%.3f)", current_goal_.z);
+        }
+        // ───────────────────────────────────────────────────────────────────────
+
+        current_goal_.x       = local_pose_.x;
+        current_goal_.y       = local_pose_.y;
+        current_goal_.heading = local_pose_.heading;
+        control_State_        = kPositionControl;
+
+        publish_vehicle_command(
+            VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM,
+            VehicleCommand::ARMING_ACTION_ARM);
+    }
+
+    void disarm()
+    {
+        RCLCPP_INFO(get_logger(), "Vehicle disarming...");
+        publish_vehicle_command(
+            VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM,
+            VehicleCommand::ARMING_ACTION_DISARM);
+    }
+
+    void publish_offboard_control_mode()
+    {
+        OffboardControlMode msg{};
+        msg.position     = true;
+        msg.velocity     = true;
+        msg.acceleration = false;
+        msg.attitude     = false;
+        msg.body_rate    = false;
+        msg.timestamp    = this->get_clock()->now().nanoseconds() / 1000;
+        offboard_control_mode_publisher_->publish(msg);
+    }
+
+    void publish_trajectory_setpoint()
+    {
+        // Switch back to position hold if twist is stale
+        if (control_State_ != kPositionControl &&
+            rclcpp::Time(local_pose_.timestamp * 1000).seconds() - twist_stamp_.seconds() > 0.1)
+        {
+            control_State_ = kPositionControl;
+            current_goal_  = local_pose_;
+            RCLCPP_INFO(get_logger(), "Switch to position control (x=%.2f y=%.2f z=%.2f)",
+                current_goal_.x, current_goal_.y, current_goal_.z);
+        }
+
+        // ── ALTITUDE CORRECTION USING RANGEFINDER ─────────────────────────────
+        // In velocity control mode, keep z locked to target via rangefinder
+        if (control_State_ == kVelocityControl && velocity2d_ && rangefinder_valid_)
+        {
+            // Compute desired NED z from rangefinder + target altitude
+            float desired_ned_z = -(rangefinder_distance_ + target_altitude_m_);
+
+            // Small proportional correction to push z toward target
+            // (acts as a soft altitude hold on top of velocity XY control)
+            float z_error = desired_ned_z - local_pose_.z;
+            // clamp correction to ±0.1 m/s equivalent nudge
+            current_goal_.z = local_pose_.z + std::clamp(z_error, -0.1f, 0.1f);
+        }
+        // ───────────────────────────────────────────────────────────────────────
+
+        TrajectorySetpoint msg{};
+        msg.timestamp = this->now().nanoseconds() / 1000;
+
+        msg.velocity[0] = (control_State_ == kVelocityControl) ? twist_.linear.y  : NAN;
+        msg.velocity[1] = (control_State_ == kVelocityControl) ? twist_.linear.x  : NAN;
+        msg.velocity[2] = (control_State_ == kVelocityControl && !velocity2d_) ? -twist_.linear.z : NAN;
+        msg.yawspeed    = (control_State_ == kVelocityControl) ? -twist_.angular.z : NAN;
+
+        msg.position[0] = (control_State_ == kPositionControl) ? current_goal_.x : NAN;
+        msg.position[1] = (control_State_ == kPositionControl) ? current_goal_.y : NAN;
+        msg.position[2] = (control_State_ == kPositionControl) ? current_goal_.z
+                        : (velocity2d_)                         ? current_goal_.z
+                        : NAN;
+        msg.yaw         = (control_State_ == kPositionControl) ? current_goal_.heading : NAN;
+
+        trajectory_setpoint_publisher_->publish(msg);
+    }
+
+    void publish_vehicle_command(uint16_t command, float param1 = 0.0, float param2 = 0.0)
+    {
+        VehicleCommand msg{};
+        msg.param1          = param1;
+        msg.param2          = param2;
+        msg.command         = command;
+        msg.target_system   = 1;
+        msg.target_component = 1;
+        msg.source_system   = 1;
+        msg.source_component = 1;
+        msg.from_external   = true;
+        msg.timestamp       = this->get_clock()->now().nanoseconds() / 1000;
+        vehicle_command_publisher_->publish(msg);
+    }
+
+    void twist_callback(const geometry_msgs::msg::Twist::SharedPtr msg)
+    {
+        twist_       = *msg;
+        twist_stamp_ = this->get_clock()->now();
+
+        // ── SWITCH TO VELOCITY: use rangefinder for z_error check ──────────────
+        float z_error = rangefinder_valid_
+            ? std::abs(rangefinder_distance_ - target_altitude_m_)          // direct comparison
+            : std::abs(local_pose_.z - current_goal_.z);                    // fallback
+
+        if (z_error < 0.15f &&
+            twist_stamp_.seconds() - arming_stamp_.seconds() > 3.0 &&
+            control_State_ == kPositionControl)
+        {
+            RCLCPP_INFO(get_logger(),
+                "Switch to velocity control (z_error=%.3f m from rangefinder)", z_error);
+            control_State_ = kVelocityControl;
+        }
+        // ───────────────────────────────────────────────────────────────────────
+    }
+
+    void local_pos_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
+    {
+        local_pose_ = *msg;
+        if (use_sim_time_) {
+            local_pose_.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+        }
+    }
+
+    void vehicle_status_callback(const px4_msgs::msg::VehicleStatus::SharedPtr msg)
+    {
+        vehicle_status_ = *msg;
+    }
+
+    void vehicle_cmd_ack_callback(const px4_msgs::msg::VehicleCommandAck::SharedPtr msg)
+    {
+        if (msg->result == VehicleCommandAck::VEHICLE_CMD_RESULT_ACCEPTED) {
+            RCLCPP_INFO(get_logger(), "Command accepted!");
+        } else {
+            RCLCPP_ERROR(get_logger(), "Command rejected!");
+        }
+    }
+
+    void joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg)
+    {
+        velocity2d_ = (msg->buttons[5] != 1);
+    }
+
+private:
+    rclcpp::TimerBase::SharedPtr timer_;
+
+    rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
+    rclcpp::Publisher<TrajectorySetpoint>::SharedPtr  trajectory_setpoint_publisher_;
+    rclcpp::Publisher<VehicleCommand>::SharedPtr      vehicle_command_publisher_;
+
+    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr          twist_subscriber_;
+    rclcpp::Subscription<VehicleLocalPosition>::SharedPtr               local_pos_subscriber_;
+    rclcpp::Subscription<VehicleStatus>::SharedPtr                      status_subscriber_;
+    rclcpp::Subscription<VehicleCommandAck>::SharedPtr                  ack_subscriber_;
+    rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr              joy_subscriber_;
+    rclcpp::Subscription<px4_msgs::msg::DistanceSensor>::SharedPtr      distance_sensor_subscriber_; // ← NEW
+
+    uint64_t                         offboard_setpoint_counter_;
+    geometry_msgs::msg::Twist        twist_;
+    rclcpp::Time                     twist_stamp_;
+    rclcpp::Time                     arming_stamp_;
+    VehicleLocalPosition             local_pose_;
+    VehicleLocalPosition             current_goal_;
+    px4_msgs::msg::VehicleStatus     vehicle_status_;
+    ControlState                     control_State_;
+    bool                             velocity2d_;
+    bool                             use_sim_time_;
+    rclcpp::Time                     last_request_;
+
+    // ── NEW members ────────────────────────────────────────────────────────────
+    float  rangefinder_distance_;   // latest valid reading in metres
+    bool   rangefinder_valid_;      // true only when signal_quality > 0
+    float  target_altitude_m_;      // desired hover height above ground (metres)
+    // ───────────────────────────────────────────────────────────────────────────
+};
+
+int main(int argc, char *argv[])
+{
+    std::cout << "Starting node..." << std::endl;
+    setvbuf(stdout, NULL, _IONBF, BUFSIZ);
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared<OffboardControl>());
+    rclcpp::shutdown();
+    return 0;
+}
