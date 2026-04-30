@@ -25,7 +25,7 @@ public:
 		timesync_sub_ = this->create_subscription<px4_msgs::msg::TimesyncStatus>(
    	 	"/fmu/out/timesync_status", 10,
     	[this](const px4_msgs::msg::TimesyncStatus::SharedPtr msg) {
-        timestamp_offset_.store(msg->estimated_offset);  // nanoseconds
+        timestamp_offset_.store(msg->estimated_offset);  
    	 });
 		
 		create_pub_sub();
@@ -41,8 +41,8 @@ public:
 					std::scoped_lock lock(mutex_); 
 					msg = current_vehicle_odometry_;
 					uint64_t now_ns = this->get_clock()->now().nanoseconds();
-					msg.timestamp = (now_ns + timestamp_offset_.load()) / 1000;
-
+					int64_t offset_ns = timestamp_offset_.load() * 1000LL;
+					msg.timestamp = (static_cast<int64_t>(now_ns) + offset_ns) / 1000;
 
 				}
 				
@@ -63,11 +63,11 @@ public:
 
 			px4_msgs::msg::VehicleOdometry msg;
 			msg.pose_frame = px4_msgs::msg::VehicleOdometry::POSE_FRAME_NED;
+			int64_t offset_ns = timestamp_offset_.load() * 1000LL; 
 			uint64_t now_ns = this->get_clock()->now().nanoseconds();
-			msg.timestamp = (now_ns + timestamp_offset_.load()) / 1000;
-
+			msg.timestamp = (static_cast<int64_t>(now_ns) + offset_ns) / 1000;
 			uint64_t ros_ns = rclcpp::Time(odometry->header.stamp).nanoseconds();
-			msg.timestamp_sample = (ros_ns + timestamp_offset_.load()) / 1000;
+			msg.timestamp_sample = (static_cast<int64_t>(ros_ns) + offset_ns) / 1000;
 			// Convert odometry pose in map frame
 			Eigen::Quaterniond orientationENU;
 			tf2::fromMsg(odometry->pose.pose.orientation, orientationENU);
@@ -165,7 +165,7 @@ private:
     std::string vehicle_odometry_topic_;
 
     	rclcpp::Subscription<px4_msgs::msg::TimesyncStatus>::SharedPtr timesync_sub_;
-	std::atomic<uint64_t> timestamp_offset_{0};
+	std::atomic<int64_t> timestamp_offset_{0};
 
     rclcpp::Publisher<px4_msgs::msg::VehicleOdometry>::SharedPtr vehicle_odometry_publisher_;
 	rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subscription_;
