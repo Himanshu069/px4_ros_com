@@ -1,7 +1,6 @@
-
-
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <px4_ros_com/frame_transforms.h>
+#include <px4_msgs/msg/timesync_status.hpp>
 #include <tf2_ros/transform_listener.hpp>
 #include <tf2_ros/buffer.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
@@ -23,7 +22,11 @@ public:
         vehicle_odometry_topic_ = this->declare_parameter("vehicle_odometry_topic", std::string("/fmu/in/vehicle_visual_odometry"));
         map_frame_id_ = this->declare_parameter("map_frame_id", std::string("map"));
         repeat_odom_ = this->declare_parameter("repeat_odom", false);
-
+	timesync_sub_ = this->create_subscription<px4_msgs::msg::TimesyncStatus>(
+   	 "/fmu/out/timesync_status", 10,
+    	[this](const px4_msgs::msg::TimesyncStatus::SharedPtr msg) {
+        timestamp_offset_.store(msg->estimated_offset);  // nanoseconds
+   	 });
 		
 		create_pub_sub();
 
@@ -37,7 +40,8 @@ public:
 				{
 					std::scoped_lock lock(mutex_); 
 					msg = current_vehicle_odometry_;
-					msg.timestamp = this->get_clock()->now().nanoseconds();
+					uint64_t now_ns = this->get_clock()->now().nanoseconds();
+					msg.timestamp = (now_ns + timestamp_offset_.load()) / 1000;
 				}
 				
 				vehicle_odometry_publisher_->publish(msg);
@@ -57,8 +61,8 @@ public:
 
 			px4_msgs::msg::VehicleOdometry msg;
 			msg.pose_frame = px4_msgs::msg::VehicleOdometry::POSE_FRAME_NED;
-			msg.timestamp = rclcpp::Time(odometry->header.stamp).nanoseconds();
-
+			uint64_t ros_ns = rclcpp::Time(odometry->header.stamp).nanoseconds();
+			msg.timestamp = (ros_ns + timestamp_offset_.load()) / 1000; 
 			// Convert odometry pose in map frame
 			Eigen::Quaterniond orientationENU;
 			tf2::fromMsg(odometry->pose.pose.orientation, orientationENU);
@@ -154,6 +158,9 @@ private:
     }
 	std::string odom_topic_;
     std::string vehicle_odometry_topic_;
+
+    	rclcpp::Subscription<px4_msgs::msg::TimesyncStatus>::SharedPtr timesync_sub_;
+	std::atomic<uint64_t> timestamp_offset_{0};
 
     rclcpp::Publisher<px4_msgs::msg::VehicleOdometry>::SharedPtr vehicle_odometry_publisher_;
 	rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subscription_;

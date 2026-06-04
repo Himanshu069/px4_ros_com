@@ -149,6 +149,7 @@ private:
 			if(!vehicle_status_.pre_flight_checks_pass || vehicle_status_.nav_state != px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_OFFBOARD)
 			{
 				RCLCPP_ERROR(get_logger(), "Pre-flight checks are failing and offboard is not enabled");
+				rclcpp::shutdown();
 			}
 			else if(get_clock()->now().seconds() - twist_stamp_.seconds() < 1) // valid joystick command
 			{
@@ -258,15 +259,12 @@ private:
 	{
         twist_ = *msg;
 		twist_stamp_ = this->get_clock()->now();
-	float z_error = std::abs(local_pose_.z - current_goal_.z);
-	if(z_error < 0.15 && twist_stamp_.seconds() - arming_stamp_.seconds() > 3.0 
-   		&& control_State_ == kPositionControl)
-	//	if(twist_stamp_.seconds() - arming_stamp_.seconds() > 5.0 && control_State_ == kPositionControl)
+	if(twist_stamp_.seconds() - arming_stamp_.seconds() > 5.0 && control_State_ == kPositionControl)
 		{
 			RCLCPP_INFO(get_logger(), "Switch to velocity control");
 			control_State_ = kVelocityControl;
 		}
-    }
+   	 }
 
     void local_pos_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
 	{
@@ -292,7 +290,7 @@ private:
     }
 
 	void joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg){
-		if(msg->buttons[5] == 1)
+		if(msg->buttons[10] == 1)
 		{
 			// When holding right trigger, accept velocity in Z
 			velocity2d_ = false;
