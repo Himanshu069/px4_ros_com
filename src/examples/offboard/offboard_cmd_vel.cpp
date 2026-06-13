@@ -91,7 +91,9 @@ public:
             "/joy", 10, std::bind(&OffboardControl::joy_callback, this, std::placeholders::_1));
 
 
-    	this->get_parameter("use_sim_time", use_sim_time_);
+    		this->get_parameter("use_sim_time", use_sim_time_);
+		this->declare_parameter<int>("target_system", 1);
+		target_system_ = static_cast<uint8_t>(this->get_parameter("target_system").as_int());
 
 		offboard_setpoint_counter_ = 0;
 
@@ -246,7 +248,7 @@ private:
 		msg.param1 = param1;
 		msg.param2 = param2;
 		msg.command = command;
-		msg.target_system = 1;
+		msg.target_system = target_system_;
 		msg.target_component = 1;
 		msg.source_system = 1;
 		msg.source_component = 1;
@@ -330,7 +332,7 @@ private:
 	bool velocity2d_;
 
 	bool use_sim_time_;
-
+	uint8_t target_system_;
 	rclcpp::Time last_request_;
 };
 
